@@ -1,0 +1,21 @@
+# requirements.txt -> List of dependencies for the project
+altair
+flask
+flask-cors
+streamlit
+plotly
+websocket-client
+pandas
+numpy
+requests
+statsmodels
+scipy
+pykalman
+matplotlib
+pandas-ta-openbb
+python-dotenv
+sqlalchemy
+fastparquet
+psutil
+python-dateutil
+brotlipy

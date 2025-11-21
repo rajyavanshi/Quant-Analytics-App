@@ -1,0 +1,53 @@
+/* === Custom Streamlit Dark Theme Tweaks === */
+div[data-testid="stSidebar"] {
+    background-color: #0d1117;
+    color: #fafafa;
+}
+h1, h2, h3, h4, h5, h6 {
+    color: #0CECDD;
+}
+.stMetric {
+    background-color: #161b22;
+    border-radius: 10px;
+    padding: 10px;
+}
+.stButton>button {
+    background-color: #0CECDD;
+    color: black;
+    border-radius: 8px;
+    transition: 0.3s;
+}
+.stButton>button:hover {
+    background-color: #10b981;
+    color: white;
+}
+
+/* --------------------------------------------------
+   Context & Insight Blocks (Quant Commentary)
+-------------------------------------------------- */
+.context-block {
+    background-color: #141821;
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    margin-top: 1rem;
+    margin-bottom: 1.2rem;
+    font-size: 0.9rem;
+    color: #D3D3D3;
+    line-height: 1.5;
+    border-left: 3px solid #00F5D4;
+    transition: background-color 0.3s ease;
+}
+
+.context-block:hover {
+    background-color: #191D28;
+}
+
+.context-block {
+    margin-top: 0.8rem;
+    margin-bottom: 1rem;
+}
+
+div[data-testid="stMetricValue"] {
+    color: #FAFAFA;
+    font-weight: 600;
+}

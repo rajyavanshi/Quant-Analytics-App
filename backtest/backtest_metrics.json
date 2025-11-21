@@ -1,0 +1,27 @@
+{
+    "total_pnl": -3.9999167471287365,
+    "sharpe": -616.9630105753071,
+    "max_drawdown": -3.9999167471287365,
+    "n_trades": 2,
+    "win_rate": 0.0,
+    "avg_trade_pnl": -1.0,
+    "periods_per_day_est": 8640.0,
+    "trades_sample": [
+        {
+            "entry_idx": 18,
+            "exit_idx": 18,
+            "entry_ts": "2025-11-07T17:23:00.000000000",
+            "exit_ts": "2025-11-07T17:23:00.000000000",
+            "position": -1.0,
+            "trade_pnl": -1.0
+        },
+        {
+            "entry_idx": 23,
+            "exit_idx": 23,
+            "entry_ts": "2025-11-07T17:23:50.000000000",
+            "exit_ts": "2025-11-07T17:23:50.000000000",
+            "position": 1.0,
+            "trade_pnl": -1.0
+        }
+    ]
+}
