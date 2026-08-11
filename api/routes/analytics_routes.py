@@ -8,6 +8,8 @@ import pandas as pd
 from flask import Blueprint, jsonify, request
 
 from api.analytics_engine_from_ticks import compute_analytics_for_pair
+from backend.analytics_engine import run_full_analytics
+from api.db_pair_prices import parse_pair
 from database.database_setup import DB_PATH, init_db
 
 analytics_bp = Blueprint("analytics_bp", __name__, url_prefix="/api/analytics")
@@ -81,12 +83,33 @@ def get_recent_analytics():
 
 @analytics_bp.get("/latest")
 def get_latest_analytics():
-    symbol_pair = request.args.get("symbol_pair", "BTCUSDT_ETHUSDT")
+    symbol_pair = request.args.get("symbol_pair", "BTCUSDT_ETHUSDT").upper()
     try:
-        df = compute_analytics_for_pair(symbol_pair, window=_window(), limit=_limit(500))
-        if df.empty:
+        window = _window(default=60)
+        limit = _limit(500)
+        symbol_x, symbol_y = parse_pair(symbol_pair)
+        result = run_full_analytics(
+            symbol_x=symbol_x,
+            symbol_y=symbol_y,
+            timeframe="1min",
+            lookback_minutes=max(120, window * 2),
+            zscore_window=window,
+        )
+        if result["df"].empty:
             return jsonify({"status": "warning", "message": f"No analytics found for {symbol_pair}", "data": None}), 404
-        return jsonify({"status": "success", "message": "Latest analytics returned", "data": _serialize(df.tail(1))[0]})
+
+        # Return the canonical summary so the latest endpoint does not expose
+        # an all-NaN tail merely because the requested rolling window exceeds
+        # the amount of currently accumulated live data.
+        data = dict(result["results"])
+        data["timestamp"] = result["df"].index[-1].isoformat()
+        data["count"] = min(len(result["df"]), limit)
+        return jsonify({
+            "status": "success",
+            "message": "Latest analytics returned",
+            "symbol_pair": symbol_pair,
+            "data": _serialize(pd.DataFrame([data]))[0],
+        })
     except ValueError as exc:
         return jsonify({"status": "error", "message": str(exc), "data": None}), 400
     except Exception as exc:
