@@ -1,3 +1,5 @@
+import sqlite3
+
 import numpy as np
 import pandas as pd
 
@@ -6,6 +8,7 @@ from backend.analytics_engine import (
     compute_hedge_ratio_ols,
     compute_spread,
     compute_zscore,
+    run_full_analytics,
     _normalize_timestamp_series,
 )
 
@@ -45,3 +48,38 @@ def test_kalman_regression_runs_with_numpy_2_5_and_recovers_relationship():
     assert len(result) == len(x)
     assert np.isfinite(result[["beta", "alpha"]].to_numpy()).all()
     assert abs(float(result["beta"].iloc[-1]) - 2.0) < 0.1
+
+
+def test_canonical_pipeline_uses_same_sampling_and_metrics(tmp_path):
+    db_path = tmp_path / "quant_data.db"
+    timestamps = pd.date_range("2026-01-01", periods=120, freq="min", tz="UTC")
+    x = np.linspace(500.0, 620.0, len(timestamps))
+    y = 3.0 * x + 12.0 + np.sin(np.arange(len(timestamps)) / 5.0)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE tick_data (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, timestamp DATETIME, price REAL, volume REAL)"
+        )
+        rows = []
+        for ts, xv, yv in zip(timestamps, x, y):
+            rows.append(("AAAUSDT", ts.isoformat(), float(xv), 1.0))
+            rows.append(("BBBUSDT", ts.isoformat(), float(yv), 1.0))
+        conn.executemany(
+            "INSERT INTO tick_data(symbol, timestamp, price, volume) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+
+    result = run_full_analytics(
+        symbol_x="AAAUSDT",
+        symbol_y="BBBUSDT",
+        timeframe="1min",
+        lookback_minutes=120,
+        zscore_window=30,
+        db_path=db_path,
+    )
+    latest = result["results"]
+    assert latest["num_bars"] >= 100
+    assert abs(latest["hedge_ratio_ols"] - 3.0) < 0.05
+    assert np.isfinite(latest["kalman_beta_latest"])
+    assert np.isfinite(latest["zscore_latest"])
+    assert "adf_pvalue" in latest
