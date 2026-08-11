@@ -1,177 +1,133 @@
 # Quant Analytics App
 
-## Overview
-The **Quant Analytics App** is a full-stack quantitative research and live market analytics platform.  
-It collects **real-time Binance Futures tick data**, runs advanced **quant analytics**, generates **trading signals**, performs **backtests**, and displays everything through an interactive **Streamlit dashboard**.
+A full-stack quantitative market-analytics prototype for Binance Futures. The system ingests live trade ticks, stores them in SQLite, computes pair-trading analytics, exposes them through Flask, and renders the results in Streamlit.
 
-This project mirrors real trading infrastructure with:
-- Live tick ingestion  
-- SQLite storage  
-- Statistical modelling (OLS, Kalman, ADF, Z-score)  
-- REST API (Flask)  
-- Dashboard visualization  
-- Modular backend design  
+## Current architecture
 
-**Status:**  
- Backend complete  
- Frontend basic working  
- API integration in progress  
-
----
-
-## Features
-- Real-time WebSocket ingestion (BTCUSDT, ETHUSDT)
-- Tick database using SQLite
-- Analytics engine:
-  - OLS hedge ratio
-  - Kalman filter hedge ratio
-  - Z-score computation
-  - Spread modelling
-  - ADF stationarity testing
-  - Rolling correlations
-- Alert system using Z-score thresholds
-- Mean-reversion backtester  
-- Streamlit dashboard with dark mode  
-- Flask REST API (WIP)  
-
----
-
-## Project Structure
-```
-Quant-Analytics-App/
-│
-├── backend/
-│   ├── analytics_engine.py
-│   ├── websocket_ingest.py
-│   ├── alert_system.py
-│   ├── backtest_engine.py
-│   └── data_storage.py
-│
-├── api/
-│   ├── flask_server.py
-│   └── routes/
-│
-├── frontend/
-│   ├── streamlit_app.py
-│   ├── components/
-│   └── assets/
-│       └── dark_theme.css
-│
-├── database/
-│   └── ticks.db
-│
-├── architecture/
-│   ├── system_architecture.drawio
-│   └── system_architecture.png
-│
-├── logs/
-│   └── app.log
-│
-├── requirements.txt
-├── app.py
-└── README.md
+```text
+Binance Futures WebSocket
+        ↓
+Buffered tick ingestion
+        ↓
+SQLite (WAL)
+        ↓
+OLS / Kalman / spread / z-score / ADF / correlation
+        ↓
+Flask REST API
+        ↓
+Streamlit dashboard
 ```
 
----
+The live backend is started by `app.py`; Streamlit remains a separate UI process.
+
+## Requirements
+
+- Python 3.11 recommended
+- Internet access for Binance Futures WebSocket
+- Windows, macOS or Linux
 
 ## Installation
 
-### 1. Clone the repository
-```
-git clone https://github.com/rajyavanshi/Quant-Analytics-App
+```bash
+git clone https://github.com/rajyavanshi/Quant-Analytics-App.git
 cd Quant-Analytics-App
+python -m venv venv
 ```
 
-### 2. Create virtual environment
-```
-python -m venv venv
+Windows PowerShell:
+
+```powershell
 .\venv\Scripts\Activate.ps1
 ```
 
-### 3. Install dependencies
-```
+Install runtime and development dependencies:
+
+```bash
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
-### 4. Initialize the database
-```
-python -c "from backend.data_storage import init_db; init_db()"
+Optional configuration:
+
+```bash
+copy .env.example .env       # PowerShell/CMD equivalent may vary by shell
 ```
 
----
+The database is initialized automatically when the application starts. You can also initialize it explicitly:
 
-## Running the Application
-
-### Start live ingestion
-```
-python backend/websocket_ingest.py
+```bash
+python -c "from backend.data_storage import init_db; print(init_db())"
 ```
 
-### Run analytics manually
-```
-python -c "from backend.analytics_engine import run_full_analytics; print(run_full_analytics())"
-```
+## Run
 
-### Start Streamlit dashboard
-```
-streamlit run frontend/streamlit_app.py
-```
+Start the backend, ingestion service, analytics worker and Flask API together:
 
-### Start Flask API (WIP)
-```
-python api/flask_server.py
-```
-
-### Run entire system (after API is complete)
-```
+```bash
 python app.py
 ```
 
----
+Start the Streamlit dashboard in a second terminal:
 
-## Example Analytics Output
-```json
-{
-  "symbol": "BTCUSDT",
-  "timeframe": "1m",
-  "hedge_ratio_ols": 0.98,
-  "hedge_ratio_kalman": 0.99,
-  "zscore_latest": 2.1,
-  "adf_pvalue": 0.04
-}
+```bash
+streamlit run frontend/streamlit_app.py
 ```
 
----
+The API defaults to `http://127.0.0.1:5000` and Streamlit to its normal port `8501`.
 
-## Technologies Used
-- Python  
-- WebSocket (aiohttp, websocket-client)  
-- SQLite  
-- Flask  
-- Streamlit  
-- Pandas, NumPy, SciPy, Statsmodels  
-- Plotly  
+## API highlights
 
----
+- `GET /api/ping`
+- `GET /api/health/live`
+- `GET /api/system/status`
+- `GET /api/data/symbols`
+- `GET /api/data/pairs`
+- `GET /api/data/recent_ticks?symbol=BTCUSDT`
+- `GET /api/analytics/recent?symbol_pair=BTCUSDT_ETHUSDT`
+- `GET /api/analytics/latest?symbol_pair=BTCUSDT_ETHUSDT`
+- `GET /api/analytics/cleaned`
+
+## Quant analytics
+
+The canonical analytics engine computes:
+
+- Static OLS hedge ratio and intercept
+- Dynamic Kalman hedge ratio
+- Hedged spread
+- Rolling z-score
+- Augmented Dickey-Fuller stationarity test
+- Rolling Pearson correlation
+
+The frontend should consume these backend values rather than independently recomputing financial statistics.
+
+## Configuration
+
+See `.env.example` for supported settings, including:
+
+- Binance symbols
+- WebSocket batching and reconnect limits
+- Flask host/port/debug mode
+- Analytics pair, timeframe and lookback
+- API request timeout
+- Logging level
+
+## Testing
+
+Unit and regression tests live under `tests/` and run without a live Binance connection:
+
+```bash
+pytest -q
+```
+
+GitHub Actions runs the same test suite on pushes and pull requests.
+
+## Data and generated files
+
+The runtime SQLite database, logs, Python caches and generated analytics/backtest artifacts are intentionally excluded from version control. Do not commit live market data or secrets.
 
 ## Author
+
 **Suraj Prakash**  
-B.Tech Electronics & Communication Engineering  
-BIT Mesra  
+B.Tech Electronics & Communication Engineering, BIT Mesra
 
-GitHub: https://github.com/rajyavanshi  
-
----
-
-## Future Improvements
-- Complete API → dashboard integration  
-- Add Redis caching  
-- Multi-asset correlation & portfolio analytics  
-- Docker deployment  
-- Backtest visualization UI  
-- Live paper trading engine  
-
----
-
-
-
+GitHub: https://github.com/rajyavanshi

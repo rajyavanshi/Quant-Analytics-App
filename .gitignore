@@ -1,9 +1,11 @@
 # Virtual environments
 venv/
 .venv/
+frontend/venv_frontend/
 
 # Python cache
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -11,6 +13,7 @@ __pycache__/
 # Environment variables / secrets
 .env
 .env.*
+!.env.example
 
 # Databases
 *.db
@@ -21,6 +24,13 @@ __pycache__/
 logs/
 *.log
 
+# Generated analytics / backtest artifacts
+backend/analytics_preview.csv
+alerts/*.csv
+backtest/*.csv
+backtest/*.json
+backtest/*.png
+
 # IDE
 .vscode/
 .idea/
@@ -28,6 +38,3 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
-
-# Frontend virtual environment
-frontend/venv_frontend/
