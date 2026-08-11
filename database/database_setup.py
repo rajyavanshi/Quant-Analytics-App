@@ -92,6 +92,7 @@ def init_db(db_path: str | os.PathLike[str] = DB_PATH) -> Path:
             CREATE TABLE IF NOT EXISTS tick_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
+                trade_id INTEGER,
                 timestamp DATETIME NOT NULL,
                 price REAL NOT NULL,
                 volume REAL NOT NULL
@@ -144,10 +145,10 @@ def init_db(db_path: str | os.PathLike[str] = DB_PATH) -> Path:
             """
         )
 
-        # Migrate legacy alert tables before enforcing the canonical schema.
-        _migrate_legacy_alerts_table(conn)
-
+        # Existing databases predate trade identity. The new column is nullable
+        # so historical rows remain valid; live Binance rows receive a trade_id.
         _ensure_columns(conn, "tick_data", {
+            "trade_id": "INTEGER",
             "volume": "REAL",
         })
         _ensure_columns(conn, "analytics_cleaned", {
@@ -160,10 +161,19 @@ def init_db(db_path: str | os.PathLike[str] = DB_PATH) -> Path:
             "created_at": "TIMESTAMP",
         })
 
+        # Migrate legacy alert tables before enforcing the canonical schema.
+        _migrate_legacy_alerts_table(conn)
+
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_tick_symbol_timestamp ON tick_data(symbol, timestamp);
             CREATE INDEX IF NOT EXISTS idx_tick_timestamp ON tick_data(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_tick_symbol_trade_id
+                ON tick_data(symbol, trade_id)
+                WHERE trade_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_tick_symbol_trade_id
+                ON tick_data(symbol, trade_id)
+                WHERE trade_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_analytics_symbol_metric_timestamp ON analytics_results(symbol, metric_name, timestamp);
             CREATE INDEX IF NOT EXISTS idx_cleaned_pair_timestamp ON analytics_cleaned(pair_symbol, timestamp);
             CREATE INDEX IF NOT EXISTS idx_alerts_pair_timestamp ON alerts_data(symbol_pair, timestamp);
