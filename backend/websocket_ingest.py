@@ -57,7 +57,7 @@ def flush_buffer() -> int:
                 """
                 INSERT INTO tick_data (symbol, trade_id, timestamp, price, volume)
                 VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(symbol, trade_id) DO NOTHING
+                ON CONFLICT(symbol, trade_id) WHERE trade_id IS NOT NULL DO NOTHING
                 """,
                 batch,
             )

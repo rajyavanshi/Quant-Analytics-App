@@ -97,25 +97,124 @@ def fetch_recent_ticks(symbols: list[str], minutes: int = 60, db_path=DB_PATH) -
     return df[df["timestamp"] >= cutoff].sort_values("timestamp").reset_index(drop=True)
 
 
-def resample_ticks_to_series(df: pd.DataFrame, timeframe: str = "1min") -> pd.DataFrame:
+def resample_ticks_to_series(
+    df: pd.DataFrame,
+    timeframe: str = "1min",
+    max_gap_bars: int = 2,
+) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
+
     required = {"timestamp", "symbol", "price"}
     if not required.issubset(df.columns):
-        raise ValueError(f"Missing columns: {sorted(required - set(df.columns))}")
+        raise ValueError(
+            f"Missing columns: {sorted(required - set(df.columns))}"
+        )
 
     work = df.copy()
     work["timestamp"] = _normalize_timestamp_series(work["timestamp"])
     work["price"] = pd.to_numeric(work["price"], errors="coerce")
-    work = work.dropna(subset=["timestamp", "symbol", "price"])
+    work["symbol"] = work["symbol"].astype(str).str.upper()
+
+    work = work.dropna(
+        subset=["timestamp", "symbol", "price"]
+    )
+
     if work.empty:
         return pd.DataFrame()
 
     series = {}
-    for symbol, group in work.groupby(work["symbol"].astype(str).str.upper()):
+
+    for symbol, group in work.groupby("symbol"):
         g = group.set_index("timestamp").sort_index()
-        series[symbol] = g["price"].resample(timeframe).last()
-    return pd.concat(series, axis=1).sort_index().dropna(how="all") if series else pd.DataFrame()
+
+        sampled = g["price"].resample(timeframe).last()
+        series[symbol] = sampled
+
+    if not series:
+        return pd.DataFrame()
+
+    bars = pd.concat(series, axis=1).sort_index()
+    bars = bars.dropna(how="all")
+
+    return _fill_short_gaps(
+        bars,
+        timeframe=timeframe,
+        max_gap_bars=max_gap_bars,
+    )
+
+def _timeframe_delta(timeframe: str) -> pd.Timedelta:
+    """Return the expected sampling interval as a pandas Timedelta."""
+    delta = pd.Timedelta(timeframe)
+    if delta <= pd.Timedelta(0):
+        raise ValueError("timeframe must be positive")
+    return delta
+
+
+def _fill_short_gaps(
+    bars: pd.DataFrame,
+    timeframe: str = "1min",
+    max_gap_bars: int = 2,
+) -> pd.DataFrame:
+    """
+    Fill only short gaps in each sampled price series.
+
+    A gap of at most `max_gap_bars` missing observations is forward-filled.
+    Longer outages remain NaN and are therefore never treated as observed
+    prices.
+    """
+    if bars is None or bars.empty:
+        return pd.DataFrame() if bars is None else bars.copy()
+
+    if max_gap_bars < 0:
+        raise ValueError("max_gap_bars must be non-negative")
+
+    _timeframe_delta(timeframe)
+
+    out = bars.copy().sort_index()
+
+    # Build an explicit regular grid so missing intervals are visible.
+    full_index = pd.date_range(
+        start=out.index.min().floor(timeframe),
+        end=out.index.max().floor(timeframe),
+        freq=timeframe,
+        tz=out.index.tz,
+    )
+
+    out = out.reindex(full_index)
+
+    if max_gap_bars:
+        out = out.ffill(limit=int(max_gap_bars))
+
+    return out
+
+
+def _latest_contiguous_segment(
+    pair: pd.DataFrame,
+    timeframe: str = "1min",
+) -> pd.DataFrame:
+    """
+    Keep the most recent contiguous block of synchronized observations.
+
+    This prevents analytics from treating a long market-data outage as if
+    the observations immediately before and after the outage were adjacent.
+    """
+    if pair is None or pair.empty:
+        return pair
+
+    expected = _timeframe_delta(timeframe)
+
+    pair = pair.sort_index()
+    gaps = pair.index.to_series().diff()
+
+    # A gap larger than the expected sampling interval breaks continuity.
+    breaks = gaps > expected
+
+    if not breaks.any():
+        return pair
+
+    last_break = breaks[breaks].index[-1]
+    return pair.loc[pair.index >= last_break]
 
 
 def check_data_sufficiency(bars: pd.DataFrame, min_bars: int = 10, symbol_x=DEFAULT_BASE, symbol_y=DEFAULT_QUOTE) -> bool:
@@ -227,13 +326,38 @@ def run_full_analytics(
     if ticks.empty:
         raise ValueError(f"No tick data available for {symbol_x}/{symbol_y}")
 
-    bars = resample_ticks_to_series(ticks, timeframe)
+    effective_timeframe = timeframe
+
+    bars = resample_ticks_to_series(
+        ticks,
+        timeframe=effective_timeframe,
+        max_gap_bars=2,
+    )
+
     if not check_data_sufficiency(bars, 10, symbol_x, symbol_y):
-        bars = resample_ticks_to_series(ticks, "10s")
+        effective_timeframe = "10s"
+
+        bars = resample_ticks_to_series(
+            ticks,
+            timeframe=effective_timeframe,
+            max_gap_bars=2,
+        )
+
     if not check_data_sufficiency(bars, 5, symbol_x, symbol_y):
         raise ValueError("Insufficient overlapping data for pair analytics")
 
     pair = bars[[symbol_x, symbol_y]].dropna().copy()
+
+    pair = _latest_contiguous_segment(
+        pair,
+        timeframe=effective_timeframe,
+    )
+
+    if len(pair) < 10:
+        raise ValueError(
+            "Insufficient contiguous overlapping data for pair analytics"
+        )
+
     pair.columns = ["x_price", "y_price"]
     beta_ols, alpha_ols = compute_hedge_ratio_ols(pair["x_price"], pair["y_price"])
 
