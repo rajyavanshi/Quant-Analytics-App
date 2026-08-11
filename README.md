@@ -85,7 +85,7 @@ cd Quant-Analytics-App
 ### 2. Create virtual environment
 ```
 python -m venv venv
-venv\Scriptsctivate
+.\venv\Scripts\Activate.ps1
 ```
 
 ### 3. Install dependencies
