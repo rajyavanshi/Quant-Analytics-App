@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import warnings
 from datetime import timezone
 from pathlib import Path
 from typing import Any
@@ -21,7 +20,6 @@ from statsmodels.tsa.stattools import adfuller
 
 from database.database_setup import DB_PATH, init_db
 
-warnings.filterwarnings("ignore", category=RuntimeWarning)
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TABLE_NAME = "tick_data"
@@ -138,25 +136,28 @@ def compute_hedge_ratio_ols(x: pd.Series, y: pd.Series) -> tuple[float, float]:
 
 
 def compute_hedge_ratio_kalman(x: pd.Series, y: pd.Series, delta=1e-5, vt=1e-3) -> pd.DataFrame:
-    pair = pd.concat([x, y], axis=1).dropna()
+    pair = pd.concat([pd.to_numeric(x, errors="coerce"), pd.to_numeric(y, errors="coerce")], axis=1).dropna()
     if len(pair) < 5:
         raise ValueError("At least five aligned observations are required for Kalman regression")
 
-    theta = np.zeros(2)
-    covariance = np.eye(2)
-    process_noise = np.eye(2) * float(delta)
+    theta = np.zeros(2, dtype=float)
+    covariance = np.eye(2, dtype=float)
+    process_noise = np.eye(2, dtype=float) * float(delta)
     betas, alphas = [], []
 
     for xv, yv in zip(pair.iloc[:, 0].to_numpy(float), pair.iloc[:, 1].to_numpy(float)):
-        H = np.array([[xv, 1.0]])
+        H = np.array([[xv, 1.0]], dtype=float)
         pred_cov = covariance + process_noise
-        innovation = yv - float(H @ theta)
-        innovation_cov = float(H @ pred_cov @ H.T + vt)
+        innovation = float(yv - (H @ theta).item())
+        innovation_cov = float((H @ pred_cov @ H.T).item() + vt)
+        if not np.isfinite(innovation_cov) or innovation_cov <= 0:
+            raise FloatingPointError("Invalid Kalman innovation covariance")
         gain = pred_cov @ H.T / innovation_cov
         theta = theta + gain[:, 0] * innovation
         covariance = pred_cov - gain @ H @ pred_cov
-        betas.append(theta[0])
-        alphas.append(theta[1])
+        covariance = (covariance + covariance.T) / 2.0
+        betas.append(float(theta[0]))
+        alphas.append(float(theta[1]))
 
     return pd.DataFrame({"beta": betas, "alpha": alphas}, index=pair.index)
 
