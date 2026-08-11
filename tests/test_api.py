@@ -6,6 +6,7 @@ import pytest
 os.environ["FLASK_DEBUG"] = "0"
 
 from api.flask_server import app
+from backend.backtest_engine import compute_metrics, simulate_backtest
 
 
 @pytest.fixture
@@ -76,3 +77,20 @@ def test_pair_analytics_route_uses_canonical_engine(monkeypatch, client):
         "zscore_window": 3,
     }
     assert response.get_json()["data"][0]["hedge_ratio"] == 2.0
+
+
+def test_backtest_extracts_long_and_short_trade_pnl_from_cashflow_intervals():
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=7, freq="min", tz="UTC"),
+            "spread": [0.0, 1.0, 3.0, 2.0, 0.0, -2.0, -4.0],
+            "signal": ["HOLD", "LONG", "LONG", "HOLD", "HOLD", "SHORT", "SHORT"],
+        }
+    )
+    result = simulate_backtest(df, notional_per_unit=1.0, fee_per_trade=0.0, slippage_pct=0.0)
+    metrics = compute_metrics(result)
+
+    assert metrics["total_pnl"] == pytest.approx(3.0)
+    assert metrics["n_trades"] == 2
+    assert [t["trade_pnl"] for t in metrics["trades_sample"]] == pytest.approx([1.0, 2.0])
+    assert [t["position"] for t in metrics["trades_sample"]] == pytest.approx([1.0, -1.0])
