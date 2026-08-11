@@ -1,4 +1,4 @@
-# requirements.txt -> List of dependencies for the project
+# Runtime dependencies
 altair
 flask
 flask-cors
@@ -10,12 +10,7 @@ numpy
 requests
 statsmodels
 scipy
-pykalman
 matplotlib
-pandas-ta-openbb
 python-dotenv
-sqlalchemy
 fastparquet
-psutil
 python-dateutil
-brotlipy
