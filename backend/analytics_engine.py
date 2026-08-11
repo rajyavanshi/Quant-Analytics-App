@@ -1,8 +1,8 @@
-"""Quantitative analytics engine for synchronized market ticks.
+"""Canonical quantitative analytics engine for synchronized market ticks.
 
-The module is intentionally independent of the Flask and Streamlit layers. It
-produces one canonical DataFrame containing prices, hedge ratios, spread,
-z-score, ADF statistics and rolling correlation.
+This module is the single quantitative source of truth for the API, dashboard,
+and backtesting layers. It owns timestamp normalization, sampling, OLS/Kalman
+hedge ratios, spread, z-score, ADF and rolling correlation calculations.
 """
 
 from __future__ import annotations
@@ -191,9 +191,17 @@ def compute_rolling_correlation(x, y, window=60):
     return x.rolling(int(window), min_periods=minimum).corr(y)
 
 
-def run_full_analytics(symbol_x=DEFAULT_BASE, symbol_y=DEFAULT_QUOTE, timeframe="1min", lookback_minutes=120, zscore_window=60):
+def run_full_analytics(
+    symbol_x=DEFAULT_BASE,
+    symbol_y=DEFAULT_QUOTE,
+    timeframe="1min",
+    lookback_minutes=120,
+    zscore_window=60,
+    db_path=DB_PATH,
+):
+    """Run the canonical analytics pipeline and return both history and latest metrics."""
     symbol_x, symbol_y = symbol_x.upper(), symbol_y.upper()
-    ticks = fetch_recent_ticks([symbol_x, symbol_y], minutes=lookback_minutes)
+    ticks = fetch_recent_ticks([symbol_x, symbol_y], minutes=lookback_minutes, db_path=db_path)
     if ticks.empty:
         raise ValueError(f"No tick data available for {symbol_x}/{symbol_y}")
 
@@ -212,12 +220,12 @@ def run_full_analytics(symbol_x=DEFAULT_BASE, symbol_y=DEFAULT_QUOTE, timeframe=
         kalman = kalman.reindex(pair.index).ffill().bfill()
     except Exception as exc:
         logger.warning("Kalman fallback to OLS: %s", exc)
-        kalman = pd.DataFrame(
-            {"beta": beta_ols, "alpha": alpha_ols}, index=pair.index
-        )
+        kalman = pd.DataFrame({"beta": beta_ols, "alpha": alpha_ols}, index=pair.index)
 
     spread = compute_spread(pair["y_price"], pair["x_price"], kalman["beta"], kalman["alpha"])
     zscore = compute_zscore(spread, zscore_window)
+    spread_mean = spread.rolling(zscore_window, min_periods=max(3, zscore_window // 4)).mean()
+    spread_std = spread.rolling(zscore_window, min_periods=max(3, zscore_window // 4)).std()
     corr = compute_rolling_correlation(pair["x_price"], pair["y_price"], zscore_window)
     adf = run_adf_test(spread)
 
@@ -229,7 +237,11 @@ def run_full_analytics(symbol_x=DEFAULT_BASE, symbol_y=DEFAULT_QUOTE, timeframe=
             "alpha_ols": alpha_ols,
             "beta_kalman": kalman["beta"],
             "alpha_kalman": kalman["alpha"],
+            "hedge_ratio": kalman["beta"],
+            "intercept": kalman["alpha"],
             "spread": spread,
+            "mean_spread": spread_mean,
+            "std_spread": spread_std,
             "zscore": zscore,
             "rolling_corr": corr,
             "adf_stat": adf["adf_stat"],
@@ -249,6 +261,11 @@ def run_full_analytics(symbol_x=DEFAULT_BASE, symbol_y=DEFAULT_QUOTE, timeframe=
         "intercept_ols": float(alpha_ols),
         "kalman_beta_latest": float(latest["beta_kalman"]),
         "kalman_alpha_latest": float(latest["alpha_kalman"]),
+        "hedge_ratio": float(latest["hedge_ratio"]),
+        "intercept": float(latest["intercept"]),
+        "spread_latest": float(latest["spread"]),
+        "mean_spread": float(latest["mean_spread"]) if pd.notna(latest["mean_spread"]) else np.nan,
+        "std_spread": float(latest["std_spread"]) if pd.notna(latest["std_spread"]) else np.nan,
         "zscore_latest": float(latest["zscore"]) if pd.notna(latest["zscore"]) else np.nan,
         "adf_pvalue": adf["pvalue"],
         "adf_stat": adf["adf_stat"],
@@ -264,7 +281,9 @@ def save_analytics_results_to_db(results: dict[str, Any], db_path=DB_PATH, table
     timestamp = pd.Timestamp.now(tz=timezone.utc).isoformat()
     for metric in (
         "num_bars", "hedge_ratio_ols", "intercept_ols", "kalman_beta_latest",
-        "kalman_alpha_latest", "zscore_latest", "adf_pvalue", "adf_stat", "rolling_corr_latest"
+        "kalman_alpha_latest", "hedge_ratio", "intercept", "spread_latest",
+        "mean_spread", "std_spread", "zscore_latest", "adf_pvalue", "adf_stat",
+        "rolling_corr_latest",
     ):
         value = results.get(metric)
         if value is None or pd.isna(value):
