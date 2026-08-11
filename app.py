@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from api.flask_server import app as flask_app
@@ -14,6 +15,8 @@ from backend.data_storage import init_db
 from backend.websocket_ingest import start_stream
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+LOG_DIR = PROJECT_ROOT / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger("quant_app")
 DEFAULT_SYMBOLS = ["btcusdt", "ethusdt", "bnbusdt", "solusdt", "dogeusdt"]
 
@@ -33,22 +36,13 @@ def analytics_worker(stop_event: threading.Event) -> None:
 
     while not stop_event.is_set():
         try:
-            result = run_full_analytics(
-                symbol_x=symbol_x,
-                symbol_y=symbol_y,
-                timeframe=timeframe,
-                lookback_minutes=lookback,
-                zscore_window=zwindow,
-            )
+            result = run_full_analytics(symbol_x, symbol_y, timeframe, lookback, zwindow)
             save_analytics_results_to_db(result["results"])
             preview = result["df"].copy()
             preview.index.name = "timestamp"
             preview.reset_index().to_csv(PROJECT_ROOT / "backend" / "analytics_preview.csv", index=False)
             try:
                 run_alert_system()
-            except FileNotFoundError:
-                # Preview was just written; this is only a defensive guard.
-                logger.exception("Alert engine could not read analytics preview")
             except Exception:
                 logger.exception("Alert generation failed for analytics cycle")
             logger.info("Analytics and signal cycle completed")
@@ -58,13 +52,20 @@ def analytics_worker(stop_event: threading.Event) -> None:
 
 
 def configure_logging() -> None:
-    if logging.getLogger().handlers:
+    root = logging.getLogger()
+    if root.handlers:
         return
-    logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[logging.StreamHandler()],
+    level = os.getenv("LOG_LEVEL", "INFO").upper()
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    file_handler = RotatingFileHandler(
+        LOG_DIR / "app.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
+    file_handler.setFormatter(formatter)
+    root.setLevel(level)
+    root.addHandler(console)
+    root.addHandler(file_handler)
 
 
 def main() -> None:
@@ -73,26 +74,12 @@ def main() -> None:
     logger.info("Starting Quant Analytics App; database=%s", db_path)
 
     stop_event = threading.Event()
-    ingestion_thread = threading.Thread(
-        target=start_stream,
-        args=(_symbols_from_env(),),
-        name="binance-ingestion",
-        daemon=True,
-    )
-    ingestion_thread.start()
-
-    analytics_thread = threading.Thread(
-        target=analytics_worker,
-        args=(stop_event,),
-        name="analytics-worker",
-        daemon=True,
-    )
-    analytics_thread.start()
+    threading.Thread(target=start_stream, args=(_symbols_from_env(),), name="binance-ingestion", daemon=True).start()
+    threading.Thread(target=analytics_worker, args=(stop_event,), name="analytics-worker", daemon=True).start()
 
     host = os.getenv("FLASK_HOST", "127.0.0.1")
     port = int(os.getenv("FLASK_PORT", "5000"))
     debug = os.getenv("FLASK_DEBUG", "0").lower() in {"1", "true", "yes"}
-
     try:
         flask_app.run(host=host, port=port, debug=debug, use_reloader=False)
     finally:
