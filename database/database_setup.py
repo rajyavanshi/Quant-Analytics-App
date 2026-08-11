@@ -27,6 +27,59 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
             conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}')
 
 
+def _migrate_legacy_alerts_table(conn: sqlite3.Connection) -> None:
+    """Migrate the pre-hardening alerts schema without losing existing events.
+
+    Older databases used required ``symbol1``/``symbol2`` columns while the
+    application now uses one canonical ``symbol_pair`` column. SQLite cannot
+    drop NOT NULL columns in-place, so rebuild the table when those legacy
+    columns are present.
+    """
+    info = conn.execute('PRAGMA table_info("alerts_data")').fetchall()
+    columns = {row[1]: row for row in info}
+    if "symbol1" not in columns and "symbol2" not in columns:
+        return
+
+    conn.execute("DROP TABLE IF EXISTS alerts_data_v2")
+    conn.execute(
+        """
+        CREATE TABLE alerts_data_v2 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol_pair TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            signal TEXT NOT NULL,
+            zscore REAL,
+            spread REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+    has_pair = "symbol_pair" in columns
+    has_zscore = "zscore" in columns
+    has_spread = "spread" in columns
+    has_created_at = "created_at" in columns
+    pair_expr = (
+        "COALESCE(NULLIF(symbol_pair, ''), symbol1 || '_' || symbol2)"
+        if has_pair
+        else "symbol1 || '_' || symbol2"
+    )
+    zscore_expr = "zscore" if has_zscore else "NULL"
+    spread_expr = "spread" if has_spread else "NULL"
+    created_expr = "created_at" if has_created_at else "CURRENT_TIMESTAMP"
+
+    conn.execute(
+        f"""
+        INSERT INTO alerts_data_v2(id, symbol_pair, timestamp, signal, zscore, spread, created_at)
+        SELECT id, {pair_expr}, timestamp, signal, {zscore_expr}, {spread_expr}, {created_expr}
+        FROM alerts_data
+        WHERE {pair_expr} IS NOT NULL
+        """
+    )
+    conn.execute("DROP TABLE alerts_data")
+    conn.execute("ALTER TABLE alerts_data_v2 RENAME TO alerts_data")
+
+
 def init_db(db_path: str | os.PathLike[str] = DB_PATH) -> Path:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +134,7 @@ def init_db(db_path: str | os.PathLike[str] = DB_PATH) -> Path:
 
             CREATE TABLE IF NOT EXISTS alerts_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol_pair TEXT,
+                symbol_pair TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 signal TEXT NOT NULL,
                 zscore REAL,
@@ -91,7 +144,9 @@ def init_db(db_path: str | os.PathLike[str] = DB_PATH) -> Path:
             """
         )
 
-        # Migrate older schemas without requiring the user to manually run scripts.
+        # Migrate legacy alert tables before enforcing the canonical schema.
+        _migrate_legacy_alerts_table(conn)
+
         _ensure_columns(conn, "tick_data", {
             "volume": "REAL",
         })
