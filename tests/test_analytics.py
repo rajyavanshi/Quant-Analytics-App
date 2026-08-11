@@ -50,6 +50,17 @@ def test_kalman_regression_runs_with_numpy_2_5_and_recovers_relationship():
     assert abs(float(result["beta"].iloc[-1]) - 2.0) < 0.1
 
 
+def test_kalman_regression_is_stable_for_crypto_price_scales():
+    x = pd.Series(np.linspace(60_000.0, 64_000.0, 120))
+    y = 0.03 * x + 100.0 + np.sin(np.arange(len(x)) / 8.0)
+    result = compute_hedge_ratio_kalman(x, y, delta=1e-5, vt=1e-3)
+    beta = float(result["beta"].iloc[-1])
+    alpha = float(result["alpha"].iloc[-1])
+    assert np.isfinite(beta)
+    assert np.isfinite(alpha)
+    assert abs(beta - 0.03) < 0.01
+
+
 def test_canonical_pipeline_uses_same_sampling_and_metrics(tmp_path):
     db_path = tmp_path / "quant_data.db"
     timestamps = pd.date_range("2026-01-01", periods=120, freq="min", tz="UTC")
