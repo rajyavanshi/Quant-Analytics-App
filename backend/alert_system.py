@@ -34,13 +34,12 @@ def _signal_for_z(z):
 
 
 def generate_alerts(df: pd.DataFrame) -> pd.DataFrame:
-    """Generate the complete signal state series without writing to the DB."""
     if "zscore" not in df.columns:
         raise ValueError("Input DataFrame must contain a zscore column")
     out = df.copy()
-    values = out["zscore"].apply(_signal_for_z)
-    out["signal"] = values.map(lambda x: x[0])
-    out["reason"] = values.map(lambda x: x[1])
+    signals = out["zscore"].apply(_signal_for_z)
+    out["signal"] = signals.map(lambda x: x[0])
+    out["reason"] = signals.map(lambda x: x[1])
     return out
 
 
@@ -51,35 +50,30 @@ def _transition_events(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def insert_alert_record(alert: dict) -> None:
-    """Insert one signal transition, ignoring an already stored transition."""
+    """Insert one transition only if the exact event is not already stored."""
     with get_db_connection() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM alerts_data WHERE symbol_pair=? AND timestamp=? AND signal=? LIMIT 1",
+            (alert["symbol_pair"], alert["timestamp"], alert["signal"]),
+        ).fetchone()
+        if exists:
+            return
         conn.execute(
-            """
-            INSERT OR IGNORE INTO alerts_data
-                (symbol_pair, timestamp, signal, zscore, spread)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                alert["symbol_pair"],
-                alert["timestamp"],
-                alert["signal"],
-                alert.get("zscore"),
-                alert.get("spread"),
-            ),
+            "INSERT INTO alerts_data(symbol_pair, timestamp, signal, zscore, spread) VALUES (?, ?, ?, ?, ?)",
+            (alert["symbol_pair"], alert["timestamp"], alert["signal"], alert.get("zscore"), alert.get("spread")),
         )
         conn.commit()
 
 
 def run_alert_system(input_csv=INPUT_CSV, output_csv=OUTPUT_CSV) -> pd.DataFrame:
-    """Read analytics output, export states, and persist only signal transitions."""
     input_csv = Path(input_csv)
     output_csv = Path(output_csv)
     if not input_csv.exists():
         raise FileNotFoundError(f"Analytics file not found: {input_csv}")
 
     df = pd.read_csv(input_csv)
-    if "timestamp" not in df.columns:
-        raise ValueError("Analytics CSV must contain a timestamp column")
+    if "timestamp" not in df.columns or "zscore" not in df.columns:
+        raise ValueError("Analytics CSV must contain timestamp and zscore columns")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
     df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     alerts = generate_alerts(df)
@@ -87,10 +81,7 @@ def run_alert_system(input_csv=INPUT_CSV, output_csv=OUTPUT_CSV) -> pd.DataFrame
     ALERT_DIR.mkdir(parents=True, exist_ok=True)
     alerts.to_csv(output_csv, index=False)
 
-    symbol_x = os.getenv("ANALYTICS_SYMBOL_X", "BTCUSDT").upper()
-    symbol_y = os.getenv("ANALYTICS_SYMBOL_Y", "ETHUSDT").upper()
-    pair = f"{symbol_x}_{symbol_y}"
-
+    pair = f"{os.getenv('ANALYTICS_SYMBOL_X', 'BTCUSDT').upper()}_{os.getenv('ANALYTICS_SYMBOL_Y', 'ETHUSDT').upper()}"
     for _, row in _transition_events(alerts).iterrows():
         insert_alert_record({
             "symbol_pair": pair,
@@ -99,7 +90,6 @@ def run_alert_system(input_csv=INPUT_CSV, output_csv=OUTPUT_CSV) -> pd.DataFrame
             "zscore": float(row["zscore"]) if pd.notna(row.get("zscore")) else None,
             "spread": float(row["spread"]) if pd.notna(row.get("spread")) else None,
         })
-
     return alerts
 
 
@@ -117,5 +107,4 @@ def prepare_realtime_output(alerts_df: pd.DataFrame) -> dict:
 
 
 if __name__ == "__main__":
-    result = run_alert_system()
-    print(prepare_realtime_output(result))
+    print(prepare_realtime_output(run_alert_system()))
