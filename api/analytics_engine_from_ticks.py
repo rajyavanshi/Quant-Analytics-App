@@ -1,34 +1,34 @@
-"""Pair analytics built on the canonical backend OLS implementation."""
+"""API adapter for the canonical quantitative analytics engine."""
 
 from __future__ import annotations
 
 import pandas as pd
 
-from backend.analytics_engine import compute_hedge_ratio_ols, run_adf_test
-from api.db_pair_prices import get_recent_pair_prices, parse_pair
+from backend.analytics_engine import run_full_analytics
+from api.db_pair_prices import parse_pair
 
 
-def compute_analytics_for_pair(symbol_pair: str, window: int = 100, limit: int = 1000) -> pd.DataFrame:
-    """Return a consistent pair analytics DataFrame for API consumers."""
-    parse_pair(symbol_pair)
+def compute_analytics_for_pair(
+    symbol_pair: str,
+    window: int = 100,
+    limit: int = 1000,
+    timeframe: str = "1min",
+) -> pd.DataFrame:
+    """Return API-compatible pair analytics from the canonical backend pipeline.
+
+    ``window`` controls rolling statistics. ``limit`` is retained for API
+    compatibility; the canonical engine uses a time-based lookback so every
+    consumer uses the same sampling policy.
+    """
+    del limit
+    symbol_x, symbol_y = parse_pair(symbol_pair)
     window = max(3, min(int(window), 1000))
-    df = get_recent_pair_prices(symbol_pair, limit=limit)
-    if df.empty:
-        return df
-
-    sample = df.tail(window)
-    beta, intercept = compute_hedge_ratio_ols(sample["x_price"], sample["y_price"])
-
-    out = df.copy()
-    out["hedge_ratio"] = float(beta)
-    out["intercept"] = float(intercept)
-    out["spread"] = out["y_price"] - (out["hedge_ratio"] * out["x_price"] + out["intercept"])
-    out["mean_spread"] = out["spread"].rolling(window, min_periods=max(3, window // 4)).mean()
-    out["std_spread"] = out["spread"].rolling(window, min_periods=max(3, window // 4)).std()
-    out["zscore"] = (out["spread"] - out["mean_spread"]) / out["std_spread"]
-    out["rolling_corr"] = out["x_price"].rolling(window, min_periods=max(3, window // 4)).corr(out["y_price"])
-
-    adf = run_adf_test(out["spread"])
-    out["adf_stat"] = adf.get("adf_stat")
-    out["adf_pvalue"] = adf.get("pvalue")
-    return out.reset_index(drop=True)
+    lookback_minutes = max(10, window * 2)
+    result = run_full_analytics(
+        symbol_x=symbol_x,
+        symbol_y=symbol_y,
+        timeframe=timeframe,
+        lookback_minutes=lookback_minutes,
+        zscore_window=window,
+    )
+    return result["df"].reset_index()
