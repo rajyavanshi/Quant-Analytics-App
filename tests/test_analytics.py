@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from backend.analytics_engine import (
+    compute_hedge_ratio_kalman,
     compute_hedge_ratio_ols,
     compute_spread,
     compute_zscore,
@@ -35,3 +36,12 @@ def test_timestamp_normalizer_handles_epoch_milliseconds():
     normalized = _normalize_timestamp_series(ts)
     assert normalized.dt.year.iloc[0] >= 2025
     assert normalized.dt.tz is not None
+
+
+def test_kalman_regression_runs_with_numpy_2_5_and_recovers_relationship():
+    x = pd.Series(np.linspace(100.0, 200.0, 100))
+    y = 2.0 * x + 5.0
+    result = compute_hedge_ratio_kalman(x, y, delta=1e-5, vt=1e-3)
+    assert len(result) == len(x)
+    assert np.isfinite(result[["beta", "alpha"]].to_numpy()).all()
+    assert abs(float(result["beta"].iloc[-1]) - 2.0) < 0.1
