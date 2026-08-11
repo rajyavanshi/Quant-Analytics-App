@@ -25,10 +25,9 @@ def safe_get(endpoint: str, params: dict | None = None):
         return {"status": "error", "message": f"Unable to connect to {url}", "data": None}
     except requests.exceptions.HTTPError as exc:
         try:
-            payload = exc.response.json()
+            return exc.response.json()
         except Exception:
-            payload = {"status": "error", "message": str(exc), "data": None}
-        return payload
+            return {"status": "error", "message": str(exc), "data": None}
     except (requests.exceptions.RequestException, ValueError) as exc:
         return {"status": "error", "message": str(exc), "data": None}
 
@@ -60,12 +59,17 @@ def get_alert_stats():
     return safe_get("/api/alerts/stats")
 
 
-def get_symbols():
-    return safe_get("/api/data/symbols")
-
-
 def get_pairs():
     return safe_get("/api/data/pairs")
+
+
+def get_symbols():
+    """Backward-compatible UI selector: returns available trading pairs."""
+    return get_pairs()
+
+
+def get_symbols_raw():
+    return safe_get("/api/data/symbols")
 
 
 def get_recent_ticks(symbol: str, limit: int = 10):
