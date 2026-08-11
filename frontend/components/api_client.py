@@ -1,125 +1,95 @@
-# =====================================================
-# File: frontend/components/api_client.py
-# Purpose: Centralized API request handler for Flask backend
-# Author: Suraj Prakash (Quant Developer)
-# =====================================================
+"""Centralized Flask API client used by the Streamlit frontend."""
+
+from __future__ import annotations
+
+import os
 
 import requests
-import os
 from dotenv import load_dotenv
 
-# -----------------------------------------------------
-# 1️⃣ Load environment variables
-# -----------------------------------------------------
 load_dotenv()
-BASE_URL = os.getenv("FLASK_API_URL", "http://127.0.0.1:5000")
+BASE_URL = os.getenv("FLASK_API_URL", "http://127.0.0.1:5000").rstrip("/")
+REQUEST_TIMEOUT = max(1, int(os.getenv("API_REQUEST_TIMEOUT_SECONDS", "10")))
 
-# -----------------------------------------------------
-# 2️⃣ Unified safe GET wrapper
-# -----------------------------------------------------
-def safe_get(endpoint: str, params: dict = None):
-    """
-    Perform a GET request safely and normalize response format.
 
-    Returns:
-        dict → {
-            "status": "success" or "error",
-            "message": "...",
-            "data": ... or None
-        }
-    """
+def safe_get(endpoint: str, params: dict | None = None):
     url = f"{BASE_URL}{endpoint}"
-
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params or {}, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
-        json_data = response.json()
-
-        # Normalize structure if backend returns plain data
-        if "status" not in json_data:
-            return {"status": "success", "message": "", "data": json_data}
-
-        return json_data
-
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"status": "success", "message": "", "data": payload}
     except requests.exceptions.Timeout:
-        return {"status": "error", "message": f"Request to {url} timed out", "data": None}
-
+        return {"status": "error", "message": f"Request timed out: {url}", "data": None}
     except requests.exceptions.ConnectionError:
         return {"status": "error", "message": f"Unable to connect to {url}", "data": None}
+    except requests.exceptions.HTTPError as exc:
+        try:
+            payload = exc.response.json()
+        except Exception:
+            payload = {"status": "error", "message": str(exc), "data": None}
+        return payload
+    except (requests.exceptions.RequestException, ValueError) as exc:
+        return {"status": "error", "message": str(exc), "data": None}
 
-    except requests.exceptions.RequestException as e:
-        return {"status": "error", "message": f"Request failed: {e}", "data": None}
 
-# =====================================================
-# 🔹 ANALYTICS ENDPOINTS
-# =====================================================
-def get_latest_analytics():
-    return safe_get("/api/analytics/latest")
+def get_latest_analytics(symbol_pair="BTCUSDT_ETHUSDT", window=100):
+    return safe_get("/api/analytics/latest", {"symbol_pair": symbol_pair, "window": window})
+
 
 def get_recent_analytics(symbol_pair: str, limit: int = 500, window: int = 100):
-    """
-    Fetch recent time-series analytics for a given symbol pair.
-    Args:
-        symbol_pair: str → like "BTCUSDT_ETHUSDT"
-        limit: number of recent records to fetch
-        window: rolling window for zscore/correlation
-    """
-    params = {"symbol_pair": symbol_pair, "limit": limit, "window": window}
-    return safe_get("/api/analytics/recent", params)
+    return safe_get("/api/analytics/recent", {"symbol_pair": symbol_pair, "limit": limit, "window": window})
 
 
-# =====================================================
-# 🔹 ALERTS ENDPOINTS
-# =====================================================
+def get_cleaned_analytics(symbol_pair: str | None = None, limit: int = 500):
+    params = {"limit": limit}
+    if symbol_pair:
+        params["symbol_pair"] = symbol_pair
+    return safe_get("/api/analytics/cleaned", params)
+
+
 def get_latest_alert():
     return safe_get("/api/alerts/latest")
+
 
 def get_recent_alerts(limit: int = 10):
     return safe_get("/api/alerts/recent", {"limit": limit})
 
+
 def get_alert_stats():
     return safe_get("/api/alerts/stats")
 
-# =====================================================
-# 🔹 DATA ENDPOINTS
-# =====================================================
+
 def get_symbols():
     return safe_get("/api/data/symbols")
 
+
+def get_pairs():
+    return safe_get("/api/data/pairs")
+
+
 def get_recent_ticks(symbol: str, limit: int = 10):
-    params = {"symbol": symbol, "limit": limit}
-    return safe_get("/api/data/recent_ticks", params)
+    return safe_get("/api/data/recent_ticks", {"symbol": symbol, "limit": limit})
+
 
 def get_volume_summary():
     return safe_get("/api/data/volume_summary")
 
-def get_backtest_results(symbol_pair: str = None, limit: int = 1000):
-    params = {}
-    if symbol_pair:
-        params["symbol_pair"] = symbol_pair
-    params["limit"] = limit
-    return safe_get("/api/backtest/results", params=params)
 
-# =====================================================
-# Logs & data fetchers
-# =====================================================
-def get_logs(limit: int = 100):
-    """Fetch backend or system logs (optional)."""
-    return safe_get("/api/system/logs", params={"limit": limit})
-
-def get_cleaned_analytics(symbol_pair: str = None, limit: int = 500):
-    """Fetch cleaned analytics data saved server-side."""
+def get_backtest_results(symbol_pair: str | None = None, limit: int = 1000):
     params = {"limit": limit}
     if symbol_pair:
         params["symbol_pair"] = symbol_pair
-    return safe_get("/api/analytics/cleaned", params=params)
+    return safe_get("/api/backtest/results", params)
 
 
-# =====================================================
-# 🔹 SYSTEM / HEALTH ENDPOINTS
-# =====================================================
+def get_logs(limit: int = 100):
+    return safe_get("/api/system/logs", {"limit": limit})
+
+
 def ping_server():
     return safe_get("/api/ping")
+
 
 def get_system_status():
     return safe_get("/api/system/status")
