@@ -9,7 +9,6 @@ import os
 import sqlite3
 import threading
 import time
-from pathlib import Path
 
 import websocket
 
@@ -26,6 +25,7 @@ STOP_EVENT = threading.Event()
 LAST_TICK_TIME = None
 MESSAGE_COUNT = 0
 INSERTED_COUNT = 0
+DUPLICATE_COUNT = 0
 RECONNECT_COUNT = 0
 
 
@@ -38,8 +38,12 @@ def get_db_connection() -> sqlite3.Connection:
 
 
 def flush_buffer() -> int:
-    """Atomically detach the in-memory batch, then write it to SQLite."""
-    global INSERTED_COUNT
+    """Atomically detach the in-memory batch, then write it to SQLite.
+
+    Binance trade IDs make live inserts idempotent. Legacy rows without a
+    trade_id remain supported and are inserted normally.
+    """
+    global INSERTED_COUNT, DUPLICATE_COUNT
     with BUFFER_LOCK:
         if not BUFFER:
             return 0
@@ -48,16 +52,28 @@ def flush_buffer() -> int:
 
     try:
         with get_db_connection() as conn:
+            before = conn.total_changes
             conn.executemany(
-                "INSERT INTO tick_data (symbol, timestamp, price, volume) VALUES (?, ?, ?, ?)",
+                """
+                INSERT INTO tick_data (symbol, trade_id, timestamp, price, volume)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, trade_id) DO NOTHING
+                """,
                 batch,
             )
             conn.commit()
-        INSERTED_COUNT += len(batch)
-        logger.info("Flushed %d ticks to database", len(batch))
-        return len(batch)
+            inserted = conn.total_changes - before
+        duplicates = len(batch) - inserted
+        INSERTED_COUNT += inserted
+        DUPLICATE_COUNT += duplicates
+        logger.info(
+            "Flushed %d ticks to database (%d inserted, %d duplicates ignored)",
+            len(batch),
+            inserted,
+            duplicates,
+        )
+        return inserted
     except Exception:
-        # Put the batch back at the front so a transient DB error does not lose data.
         with BUFFER_LOCK:
             BUFFER[0:0] = batch
         logger.exception("Tick buffer flush failed; batch restored")
@@ -70,30 +86,37 @@ def _flush_worker() -> None:
 
 
 def normalize_trade(data: dict):
-    """Normalize Binance trade payload into a database row."""
+    """Normalize a Binance trade payload into a database row.
+
+    Returns ``(symbol, trade_id, timestamp, price, volume)``. The trade ID is
+    required for live events so duplicate delivery can be detected safely.
+    """
     try:
-        required = ("s", "T", "p", "q")
+        required = ("e", "s", "t", "T", "p", "q")
         if not all(key in data for key in required):
             logger.warning("Skipping incomplete trade payload")
             return None
+        if data.get("e") != "trade":
+            return None
 
-        symbol = str(data["s"]).upper()
+        symbol = str(data["s"]).upper().strip()
+        trade_id = int(data["t"])
         timestamp = dt.datetime.fromtimestamp(int(data["T"]) / 1000, tz=dt.timezone.utc)
         price = float(data["p"])
         volume = float(data["q"])
 
-        if not symbol or price <= 0 or volume <= 0:
+        if not symbol or trade_id < 0 or price <= 0 or volume <= 0:
             return None
-        return symbol, timestamp.isoformat(), price, volume
+        return symbol, trade_id, timestamp.isoformat(), price, volume
     except (TypeError, ValueError, OverflowError):
         logger.exception("Invalid trade payload")
         return None
 
 
-def insert_tick(symbol, timestamp, price, volume) -> None:
+def insert_tick(symbol, trade_id, timestamp, price, volume) -> None:
     global LAST_TICK_TIME
     with BUFFER_LOCK:
-        BUFFER.append((symbol, timestamp, price, volume))
+        BUFFER.append((symbol, trade_id, timestamp, price, volume))
     LAST_TICK_TIME = time.time()
 
 
@@ -180,6 +203,7 @@ def health_snapshot() -> dict:
     return {
         "message_count": MESSAGE_COUNT,
         "inserted_count": INSERTED_COUNT,
+        "duplicate_count": DUPLICATE_COUNT,
         "buffer_size": len(BUFFER),
         "last_tick_age_seconds": age,
         "reconnect_count": RECONNECT_COUNT,
