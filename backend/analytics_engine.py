@@ -136,16 +136,35 @@ def compute_hedge_ratio_ols(x: pd.Series, y: pd.Series) -> tuple[float, float]:
 
 
 def compute_hedge_ratio_kalman(x: pd.Series, y: pd.Series, delta=1e-5, vt=1e-3) -> pd.DataFrame:
+    """Estimate a time-varying hedge ratio with numerically stable scaling.
+
+    The Kalman state is fit on centered/scaled prices so covariance updates are
+    well-conditioned even when one asset trades near 1e5 and the other near 1e3.
+    Returned beta/alpha are transformed back to the original price units.
+    """
     pair = pd.concat([pd.to_numeric(x, errors="coerce"), pd.to_numeric(y, errors="coerce")], axis=1).dropna()
     if len(pair) < 5:
         raise ValueError("At least five aligned observations are required for Kalman regression")
 
+    x_values = pair.iloc[:, 0].to_numpy(float)
+    y_values = pair.iloc[:, 1].to_numpy(float)
+    x_mean = float(np.mean(x_values))
+    y_mean = float(np.mean(y_values))
+    x_scale = float(np.std(x_values, ddof=0))
+    y_scale = float(np.std(y_values, ddof=0))
+    if not np.isfinite(x_scale) or x_scale <= np.finfo(float).eps:
+        raise ValueError("Kalman regression requires non-constant x prices")
+    if not np.isfinite(y_scale) or y_scale <= np.finfo(float).eps:
+        raise ValueError("Kalman regression requires non-constant y prices")
+
+    xs = (x_values - x_mean) / x_scale
+    ys = (y_values - y_mean) / y_scale
     theta = np.zeros(2, dtype=float)
     covariance = np.eye(2, dtype=float)
     process_noise = np.eye(2, dtype=float) * float(delta)
     betas, alphas = [], []
 
-    for xv, yv in zip(pair.iloc[:, 0].to_numpy(float), pair.iloc[:, 1].to_numpy(float)):
+    for xv, yv in zip(xs, ys):
         H = np.array([[xv, 1.0]], dtype=float)
         pred_cov = covariance + process_noise
         innovation = float(yv - (H @ theta).item())
@@ -156,8 +175,11 @@ def compute_hedge_ratio_kalman(x: pd.Series, y: pd.Series, delta=1e-5, vt=1e-3) 
         theta = theta + gain[:, 0] * innovation
         covariance = pred_cov - gain @ H @ pred_cov
         covariance = (covariance + covariance.T) / 2.0
-        betas.append(float(theta[0]))
-        alphas.append(float(theta[1]))
+
+        beta = float(theta[0] * y_scale / x_scale)
+        alpha = float(y_mean - beta * x_mean + theta[1] * y_scale)
+        betas.append(beta)
+        alphas.append(alpha)
 
     return pd.DataFrame({"beta": betas, "alpha": alphas}, index=pair.index)
 
