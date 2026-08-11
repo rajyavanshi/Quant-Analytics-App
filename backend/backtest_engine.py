@@ -100,6 +100,7 @@ def simulate_backtest(df, position_size=POSITION_SIZE, notional_per_unit=NOTIONA
 
 
 def _extract_trades(df):
+    """Extract complete trades, including PnL on the bar that closes the position."""
     trades = []
     positions = df["position"].to_numpy()
     pnls = df["pnl"].to_numpy()
@@ -115,19 +116,21 @@ def _extract_trades(df):
             entry_idx = i
             entry_pos = current
             acc_pnl = 0.0
+
         if in_trade:
             acc_pnl += pnls[i]
-        next_pos = positions[i + 1] if i + 1 < len(positions) else 0.0
-        if in_trade and (next_pos == 0.0 or np.sign(next_pos) != np.sign(current)):
-            trades.append({
-                "entry_idx": int(entry_idx),
-                "exit_idx": int(i),
-                "entry_ts": str(timestamps[entry_idx]),
-                "exit_ts": str(timestamps[i]),
-                "position": float(entry_pos),
-                "trade_pnl": float(acc_pnl),
-            })
-            in_trade = False
+            next_pos = positions[i + 1] if i + 1 < len(positions) else 0.0
+            if next_pos == 0.0 or np.sign(next_pos) != np.sign(current):
+                trades.append({
+                    "entry_idx": int(entry_idx),
+                    "exit_idx": int(i),
+                    "entry_ts": str(timestamps[entry_idx]),
+                    "exit_ts": str(timestamps[i]),
+                    "position": float(entry_pos),
+                    "trade_pnl": float(acc_pnl),
+                })
+                in_trade = False
+
     return trades
 
 
