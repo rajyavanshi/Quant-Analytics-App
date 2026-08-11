@@ -1,45 +1,29 @@
-"""Application entry point for the Quant Analytics backend.
-
-Startup order:
-1. initialize the canonical SQLite database
-2. start Binance ingestion in a background thread
-3. start the analytics worker in a background thread
-4. serve the Flask API
-
-Streamlit remains a separate UI process and consumes the Flask API.
-"""
+"""Application entry point for the Quant Analytics backend."""
 
 from __future__ import annotations
 
 import logging
 import os
 import threading
-import time
 from pathlib import Path
 
-from backend.data_storage import init_db
-from backend.analytics_engine import run_full_analytics, save_analytics_results_to_db
 from api.flask_server import app as flask_app
+from backend.alert_system import run_alert_system
+from backend.analytics_engine import run_full_analytics, save_analytics_results_to_db
+from backend.data_storage import init_db
 from backend.websocket_ingest import start_stream
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-LOG_DIR = PROJECT_ROOT / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-
 logger = logging.getLogger("quant_app")
-
 DEFAULT_SYMBOLS = ["btcusdt", "ethusdt", "bnbusdt", "solusdt", "dogeusdt"]
 
 
 def _symbols_from_env() -> list[str]:
     raw = os.getenv("BINANCE_SYMBOLS", "")
-    if not raw.strip():
-        return DEFAULT_SYMBOLS.copy()
-    return [s.strip().lower() for s in raw.split(",") if s.strip()]
+    return [s.strip().lower() for s in raw.split(",") if s.strip()] or DEFAULT_SYMBOLS.copy()
 
 
 def analytics_worker(stop_event: threading.Event) -> None:
-    """Run analytics periodically without blocking the API server."""
     interval = max(10, int(os.getenv("ANALYTICS_INTERVAL_SECONDS", "60")))
     symbol_x = os.getenv("ANALYTICS_SYMBOL_X", "BTCUSDT").upper()
     symbol_y = os.getenv("ANALYTICS_SYMBOL_Y", "ETHUSDT").upper()
@@ -59,18 +43,21 @@ def analytics_worker(stop_event: threading.Event) -> None:
             save_analytics_results_to_db(result["results"])
             preview = result["df"].copy()
             preview.index.name = "timestamp"
-            preview.reset_index().to_csv(
-                PROJECT_ROOT / "backend" / "analytics_preview.csv", index=False
-            )
-            logger.info("Analytics cycle completed successfully")
+            preview.reset_index().to_csv(PROJECT_ROOT / "backend" / "analytics_preview.csv", index=False)
+            try:
+                run_alert_system()
+            except FileNotFoundError:
+                # Preview was just written; this is only a defensive guard.
+                logger.exception("Alert engine could not read analytics preview")
+            except Exception:
+                logger.exception("Alert generation failed for analytics cycle")
+            logger.info("Analytics and signal cycle completed")
         except Exception:
             logger.exception("Analytics cycle failed; retrying on next cycle")
-
         stop_event.wait(interval)
 
 
 def configure_logging() -> None:
-    """Configure application logging once at process startup."""
     if logging.getLogger().handlers:
         return
     logging.basicConfig(
@@ -82,13 +69,10 @@ def configure_logging() -> None:
 
 def main() -> None:
     configure_logging()
-    logger.info("Starting Quant Analytics App")
-
     db_path = init_db()
-    logger.info("Database initialized at %s", db_path)
+    logger.info("Starting Quant Analytics App; database=%s", db_path)
 
     stop_event = threading.Event()
-
     ingestion_thread = threading.Thread(
         target=start_stream,
         args=(_symbols_from_env(),),
@@ -110,7 +94,6 @@ def main() -> None:
     debug = os.getenv("FLASK_DEBUG", "0").lower() in {"1", "true", "yes"}
 
     try:
-        logger.info("Starting Flask API on %s:%s", host, port)
         flask_app.run(host=host, port=port, debug=debug, use_reloader=False)
     finally:
         stop_event.set()
