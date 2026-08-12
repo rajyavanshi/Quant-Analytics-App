@@ -107,8 +107,6 @@ def test_trade_pnl_includes_entry_and_exit_costs_and_reconciles_to_total_pnl():
     result = simulate_backtest(df, notional_per_unit=1.0, fee_per_trade=1.0, slippage_pct=0.0)
     metrics = compute_metrics(result)
 
-    # Entry cost is paid on the LONG entry; exit cost is paid when HOLD closes it.
-    # Raw market PnL is +2, so the completed trade nets 0 after two unit costs.
     assert metrics["total_pnl"] == pytest.approx(0.0)
     assert metrics["n_trades"] == 1
     assert metrics["trades_sample"][0]["trade_pnl"] == pytest.approx(0.0)
@@ -129,6 +127,6 @@ def test_reversal_cost_is_split_between_old_exit_and_new_entry():
     assert metrics["n_trades"] == 2
     assert sum(t["trade_pnl"] for t in trades) == pytest.approx(metrics["total_pnl"])
     assert [t["position"] for t in trades] == pytest.approx([1.0, -1.0])
-    # Long: entry -1, market +2, reversal exit -1 => 0.
+    # Long: entry -1, market +2, reversal interval -1, reversal exit -1 => -1.
     # Short: reversal entry -1, market -2, final exit -1 => -4.
-    assert [t["trade_pnl"] for t in trades] == pytest.approx([0.0, -4.0])
+    assert [t["trade_pnl"] for t in trades] == pytest.approx([-1.0, -4.0])
