@@ -100,41 +100,48 @@ def simulate_backtest(df, position_size=POSITION_SIZE, notional_per_unit=NOTIONA
 
 
 def _extract_trades(df):
-    """Extract trades from continuous non-zero position intervals.
+    """Extract trades with lifecycle P&L and transaction costs allocated correctly.
 
-    A trade begins on the first non-zero position and ends when that position
-    is closed or reversed. If the backtest ends while a position remains open,
-    the trade is closed for reporting at the final available bar using the PnL
-    generated through that final bar.
+    Market P&L on row ``i`` belongs to the position held during the preceding
+    interval (``position_prev[i]``). Entry costs belong to the new trade,
+    closing costs belong to the trade being closed, and reversal costs are
+    split into the old position's exit cost and the new position's entry cost.
+    This makes the sum of completed/open trade P&L equal total backtest P&L.
     """
     trades = []
     positions = df["position"].to_numpy(dtype=float)
-    pnls = df["pnl"].to_numpy(dtype=float)
+    raw_pnls = df["cash_pnl_raw"].to_numpy(dtype=float)
+    costs = df["trade_cost"].to_numpy(dtype=float)
     timestamps = df["timestamp"].to_numpy()
 
     entry_idx = None
     entry_pos = 0.0
     acc_pnl = 0.0
+    cost_per_position_unit = None
 
     for i in range(len(df)):
         current_pos = positions[i]
-
-        if entry_idx is None and current_pos != 0.0:
-            entry_idx = i
-            entry_pos = current_pos
-            acc_pnl = 0.0
-            continue
+        prev_pos = positions[i - 1] if i > 0 else 0.0
+        cost = float(costs[i])
+        raw_pnl = float(raw_pnls[i])
 
         if entry_idx is None:
+            if current_pos == 0.0:
+                continue
+            entry_idx = i
+            entry_pos = current_pos
+            entry_cost = cost
+            cost_per_position_unit = entry_cost / abs(current_pos) if current_pos else 0.0
+            acc_pnl = -entry_cost
             continue
 
-        prev_pos = positions[i - 1] if i > 0 else 0.0
-        acc_pnl += pnls[i]
+        acc_pnl += raw_pnl
 
         closes = prev_pos != 0.0 and current_pos == 0.0
         reverses = prev_pos != 0.0 and current_pos != 0.0 and np.sign(current_pos) != np.sign(prev_pos)
 
-        if closes or reverses:
+        if closes:
+            acc_pnl -= cost
             trades.append({
                 "entry_idx": int(entry_idx),
                 "exit_idx": int(i),
@@ -143,14 +150,26 @@ def _extract_trades(df):
                 "position": float(entry_pos),
                 "trade_pnl": float(acc_pnl),
             })
-            if reverses:
-                entry_idx = i
-                entry_pos = current_pos
-                acc_pnl = 0.0
-            else:
-                entry_idx = None
-                entry_pos = 0.0
-                acc_pnl = 0.0
+            entry_idx = None
+            entry_pos = 0.0
+            acc_pnl = 0.0
+            cost_per_position_unit = None
+        elif reverses:
+            exit_cost = cost_per_position_unit * abs(prev_pos) if cost_per_position_unit is not None else cost / 2.0
+            entry_cost = cost - exit_cost
+            acc_pnl -= exit_cost
+            trades.append({
+                "entry_idx": int(entry_idx),
+                "exit_idx": int(i),
+                "entry_ts": str(timestamps[entry_idx]),
+                "exit_ts": str(timestamps[i]),
+                "position": float(entry_pos),
+                "trade_pnl": float(acc_pnl),
+            })
+            entry_idx = i
+            entry_pos = current_pos
+            acc_pnl = -entry_cost
+            cost_per_position_unit = entry_cost / abs(current_pos) if current_pos else 0.0
 
     if entry_idx is not None:
         trades.append({
