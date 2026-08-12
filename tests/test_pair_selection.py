@@ -73,7 +73,7 @@ def test_screen_pair_accepts_stationary_log_spread():
     assert np.isfinite(result["adf_pvalue"])
     assert result["adf_pvalue"] < 0.05
     assert np.isfinite(result["half_life_minutes"])
-    assert result["eligible"] is True
+    assert bool(result["eligible"])
 
 
 def test_log_spread_is_zero_for_exact_relationship():
