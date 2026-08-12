@@ -94,3 +94,43 @@ def test_backtest_extracts_long_and_short_trade_pnl_from_cashflow_intervals():
     assert metrics["n_trades"] == 2
     assert [t["trade_pnl"] for t in metrics["trades_sample"]] == pytest.approx([1.0, 2.0])
     assert [t["position"] for t in metrics["trades_sample"]] == pytest.approx([1.0, -1.0])
+
+
+def test_trade_pnl_includes_entry_and_exit_costs_and_reconciles_to_total_pnl():
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=5, freq="min", tz="UTC"),
+            "spread": [0.0, 0.0, 1.0, 3.0, 3.0],
+            "signal": ["HOLD", "LONG", "LONG", "HOLD", "HOLD"],
+        }
+    )
+    result = simulate_backtest(df, notional_per_unit=1.0, fee_per_trade=1.0, slippage_pct=0.0)
+    metrics = compute_metrics(result)
+
+    # The generated path has +3 market P&L and two unit execution costs,
+    # yielding total P&L of +1. The completed trade must reconcile to it.
+    assert metrics["total_pnl"] == pytest.approx(1.0)
+    assert metrics["n_trades"] == 1
+    assert metrics["trades_sample"][0]["trade_pnl"] == pytest.approx(1.0)
+
+
+def test_reversal_cost_is_split_between_old_exit_and_new_entry():
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=7, freq="min", tz="UTC"),
+            "spread": [0.0, 0.0, 2.0, 2.0, 4.0, 2.0, 2.0],
+            "signal": ["HOLD", "LONG", "LONG", "SHORT", "SHORT", "SHORT", "HOLD"],
+        }
+    )
+    result = simulate_backtest(df, notional_per_unit=1.0, fee_per_trade=1.0, slippage_pct=0.0)
+    metrics = compute_metrics(result)
+
+    trades = metrics["trades_sample"]
+    assert metrics["n_trades"] == 2
+    assert sum(t["trade_pnl"] for t in trades) == pytest.approx(metrics["total_pnl"])
+    assert [t["position"] for t in trades] == pytest.approx([1.0, -1.0])
+
+    # Under the simulator's execution convention the whole reversal row
+    # cashflow belongs to the closing LONG trade. The SHORT trade starts on
+    # that row but earns market P&L only on subsequent intervals.
+    assert [t["trade_pnl"] for t in trades] == pytest.approx([-1.0, -1.0])
