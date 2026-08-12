@@ -90,11 +90,32 @@ def upsert_dataframe(df: pd.DataFrame, db_path=DB_PATH) -> int:
     if df.empty:
         return 0
     init_db(db_path)
-    inserted = 0
     import sqlite3
 
     with sqlite3.connect(str(db_path), timeout=30) as conn:
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_resampled_symbol_interval_timestamp ON resampled_data(symbol, interval, timestamp)")
+        # Research backfill databases are expected to contain unique candle
+        # keys. Fail clearly if a legacy database contains duplicate keys
+        # rather than silently corrupting historical observations.
+        duplicate_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT symbol, interval, timestamp
+                FROM resampled_data
+                GROUP BY symbol, interval, timestamp
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()[0]
+        if duplicate_count:
+            raise RuntimeError(
+                "resampled_data contains duplicate candle keys; clean those "
+                "duplicates before running the historical backfill."
+            )
+
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_resampled_symbol_interval_timestamp "
+            "ON resampled_data(symbol, interval, timestamp)"
+        )
         rows = list(df.itertuples(index=False, name=None))
         conn.executemany(
             """
@@ -110,8 +131,7 @@ def upsert_dataframe(df: pd.DataFrame, db_path=DB_PATH) -> int:
             rows,
         )
         conn.commit()
-        inserted = len(rows)
-    return inserted
+    return len(rows)
 
 
 def parse_args() -> argparse.Namespace:
@@ -127,7 +147,15 @@ def main() -> None:
     if args.days <= 0:
         raise SystemExit("--days must be positive")
 
-    end = pd.Timestamp(args.end, tz="UTC") if args.end else pd.Timestamp.now(tz="UTC").floor("min")
+    end = pd.Timestamp.now(tz="UTC").floor("min")
+    if args.end:
+        end = pd.Timestamp(args.end)
+        if end.tzinfo is None:
+            end = end.tz_localize("UTC")
+        else:
+            end = end.tz_convert("UTC")
+        end = end.floor("min")
+
     start = end - pd.Timedelta(days=args.days)
 
     print("=" * 70)
