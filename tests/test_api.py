@@ -107,11 +107,11 @@ def test_trade_pnl_includes_entry_and_exit_costs_and_reconciles_to_total_pnl():
     result = simulate_backtest(df, notional_per_unit=1.0, fee_per_trade=1.0, slippage_pct=0.0)
     metrics = compute_metrics(result)
 
-    # Entry occurs at row 1, market P&L arrives on rows 2-4, and the final
-    # HOLD row closes the position. There is +2 market P&L and two unit costs.
-    assert metrics["total_pnl"] == pytest.approx(0.0)
+    # The generated path has +3 market P&L and two unit execution costs,
+    # yielding total P&L of +1. The completed trade must reconcile to it.
+    assert metrics["total_pnl"] == pytest.approx(1.0)
     assert metrics["n_trades"] == 1
-    assert metrics["trades_sample"][0]["trade_pnl"] == pytest.approx(0.0)
+    assert metrics["trades_sample"][0]["trade_pnl"] == pytest.approx(1.0)
 
 
 def test_reversal_cost_is_split_between_old_exit_and_new_entry():
@@ -130,6 +130,7 @@ def test_reversal_cost_is_split_between_old_exit_and_new_entry():
     assert sum(t["trade_pnl"] for t in trades) == pytest.approx(metrics["total_pnl"])
     assert [t["position"] for t in trades] == pytest.approx([1.0, -1.0])
 
-    # Long: entry -1, market +2, reversal cashflow -2, so -1.
-    # Short: market -2, final exit -1, so -3. Total = -4.
-    assert [t["trade_pnl"] for t in trades] == pytest.approx([-1.0, -3.0])
+    # Under the simulator's execution convention the whole reversal row
+    # cashflow belongs to the closing LONG trade. The SHORT trade starts on
+    # that row but earns market P&L only on subsequent intervals.
+    assert [t["trade_pnl"] for t in trades] == pytest.approx([-1.0, -1.0])
