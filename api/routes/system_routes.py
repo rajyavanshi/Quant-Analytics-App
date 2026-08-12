@@ -1,52 +1,25 @@
-# =====================================================
-# File: api/routes/system_routes.py
-# Purpose: Backend system and log endpoints
-# Author: Suraj Prakash (Quant Developer)
-# =====================================================
+"""System log endpoint."""
+
+from __future__ import annotations
+
+from pathlib import Path
 
 from flask import Blueprint, jsonify, request
-import os
-import logging
 
-# Create blueprint
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LOG_FILE = PROJECT_ROOT / "logs" / "app.log"
 system_bp = Blueprint("system_bp", __name__)
 
-# -----------------------------------------------------
-# 🧾 LOG READER — /api/system/logs
-# -----------------------------------------------------
-@system_bp.route("/api/system/logs", methods=["GET"])
+
+@system_bp.get("/api/system/logs")
 def get_system_logs():
-    """
-    Returns the last N lines from the app log file.
-    Query params:
-        limit (int): number of lines (default = 200)
-    """
     try:
-        log_file_path = os.path.join(os.path.dirname(__file__), "..", "..", "logs", "app.log")
-
-        log_file_path = os.path.abspath(log_file_path)
-
-        limit = int(request.args.get("limit", 200))
-
-        if not os.path.exists(log_file_path):
-            return jsonify({
-                "status": "error",
-                "message": f"Log file not found at {log_file_path}"
-            }), 404
-
-        # Read last N lines efficiently
-        with open(log_file_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()[-limit:]
-
-        return jsonify({
-            "status": "success",
-            "count": len(lines),
-            "data": lines[::-1]  # reverse chronological for display
-        })
-
-    except Exception as e:
-        logging.exception("Error while reading logs.")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        limit = request.args.get("limit", default=200, type=int)
+        if limit is None or not 1 <= limit <= 5000:
+            return jsonify({"status": "error", "message": "limit must be between 1 and 5000", "data": []}), 400
+        if not LOG_FILE.exists():
+            return jsonify({"status": "warning", "message": "No application log has been created yet", "data": []}), 200
+        lines = LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+        return jsonify({"status": "success", "count": min(len(lines), limit), "data": lines[-limit:][::-1]})
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc), "data": []}), 500

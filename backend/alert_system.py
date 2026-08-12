@@ -1,169 +1,110 @@
-# =====================================================
-# File: backend/alert_system.py
-# Purpose: Generate and store trading alerts (DB + CSV)
-# Author: Suraj Prakash (Quant Developer)
-# =====================================================
+"""Stateful z-score signal engine and alert persistence."""
 
-import pandas as pd
-import json
+from __future__ import annotations
+
 import os
 import sqlite3
-from datetime import datetime
-import logging
+from pathlib import Path
 
-# ================= CONFIGURATION ======================
-ALERT_DIR = r"D:\Quant Analytics App\alerts"
-INPUT_CSV = r"D:\Quant Analytics App\backend\analytics_preview.csv"
-OUTPUT_CSV = os.path.join(ALERT_DIR, "alerts_output.csv")
-DB_PATH = r"D:\Quant Analytics App\database\quant_data.db"
+import pandas as pd
 
-UPPER_Z = 2.0   # Overbought threshold -> SHORT
-LOWER_Z = -2.0  # Oversold threshold  -> LONG
+from database.database_setup import DB_PATH, init_db
 
-# =====================================================
-# Helper: Ensure DB connection
-# =====================================================
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ALERT_DIR = PROJECT_ROOT / "alerts"
+INPUT_CSV = PROJECT_ROOT / "backend" / "analytics_preview.csv"
+OUTPUT_CSV = ALERT_DIR / "alerts_output.csv"
+UPPER_Z = float(os.getenv("ALERT_UPPER_Z", "2.0"))
+LOWER_Z = float(os.getenv("ALERT_LOWER_Z", "-2.0"))
+
+
 def get_db_connection():
-    """Return SQLite connection object."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    init_db()
+    return sqlite3.connect(str(DB_PATH), timeout=30)
 
 
-# =====================================================
-# Helper: Insert alert into DB
-# =====================================================
-def insert_alert_record(alert_dict):
-    """Insert a single alert into the alerts_data table."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            INSERT INTO alerts_data
-            (timestamp, symbol1, symbol2, signal, reason, zscore, spread, hedge_ratio)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-        """, (
-            alert_dict["timestamp"],
-            alert_dict.get("symbol1", "BTCUSDT"),
-            alert_dict.get("symbol2", "ETHUSDT"),
-            alert_dict["signal"],
-            alert_dict["reason"],
-            alert_dict.get("zscore"),
-            alert_dict.get("spread"),
-            alert_dict.get("hedge_ratio")
-        ))
-
-        conn.commit()
-        conn.close()
-        logging.info(f" Alert inserted into DB: {alert_dict['signal']} @ {alert_dict['timestamp']}")
-
-    except Exception as e:
-        logging.error(f" Error inserting alert into DB: {str(e)}")
+def _signal_for_z(z):
+    if pd.isna(z):
+        return "HOLD", "Insufficient z-score data."
+    if z > UPPER_Z:
+        return "SHORT", f"Z-score > +{UPPER_Z:g}: spread is relatively overbought."
+    if z < LOWER_Z:
+        return "LONG", f"Z-score < {LOWER_Z:g}: spread is relatively oversold."
+    return "HOLD", "Z-score is inside the neutral range."
 
 
-# =====================================================
-# Function: Generate alerts from analytics DataFrame
-# =====================================================
 def generate_alerts(df: pd.DataFrame) -> pd.DataFrame:
-    """Generate trading signals based on z-score thresholds."""
-    signals, reasons = [], []
-
-    for z in df["zscore"]:
-        if z > UPPER_Z:
-            signals.append("SHORT")
-            reasons.append("Z-score > +2 → Spread overbought, short the pair.")
-        elif z < LOWER_Z:
-            signals.append("LONG")
-            reasons.append("Z-score < -2 → Spread oversold, long the pair.")
-        else:
-            signals.append("HOLD")
-            reasons.append("Within neutral range → No trade signal.")
-
-    df["signal"] = signals
-    df["reason"] = reasons
-    return df
-
-
-# =====================================================
-# Function: Main Alert System Runner
-# =====================================================
-def run_alert_system():
-    """Generate alerts and store results (to DB + CSV)."""
-    if not os.path.exists(ALERT_DIR):
-        os.makedirs(ALERT_DIR)
-
-    if not os.path.exists(INPUT_CSV):
-        raise FileNotFoundError(f"Analytics file not found: {INPUT_CSV}")
-
-    df = pd.read_csv(INPUT_CSV)
     if "zscore" not in df.columns:
-        raise ValueError("Input CSV must contain a 'zscore' column.")
-
-    # Generate alert signals
-    df_alerts = generate_alerts(df)
-
-    # Save alerts to CSV
-    df_alerts.to_csv(OUTPUT_CSV, index=False)
-    print(f"[{datetime.now()}]  Alerts saved to CSV → {OUTPUT_CSV}")
-
-    # Save alerts to DB
-    for _, row in df_alerts.iterrows():
-        alert_dict = {
-            "timestamp": str(row.get("timestamp")),
-            "symbol1": str(row.get("symbol1", "BTCUSDT")),
-            "symbol2": str(row.get("symbol2", "ETHUSDT")),
-            "signal": row.get("signal"),
-            "reason": row.get("reason"),
-            "zscore": float(row.get("zscore", 0)),
-            "spread": float(row.get("spread", 0)),
-            "hedge_ratio": float(row.get("beta_kalman", 0))
-        }
-        insert_alert_record(alert_dict)
-
-    print(f"[{datetime.now()}]  Alerts stored into database → {DB_PATH}")
-    return df_alerts
+        raise ValueError("Input DataFrame must contain a zscore column")
+    out = df.copy()
+    signals = out["zscore"].apply(_signal_for_z)
+    out["signal"] = signals.map(lambda x: x[0])
+    out["reason"] = signals.map(lambda x: x[1])
+    return out
 
 
-# =====================================================
-# Helper: Print Latest Signal
-# =====================================================
-def print_latest_signal(alerts_df):
-    """Print the most recent signal with reasoning."""
-    latest = alerts_df.iloc[-1]
-    print("\n Latest Alert Summary")
-    print("──────────────────────────────")
-    print(f"Timestamp : {latest['timestamp']}")
-    print(f"Z-Score   : {latest['zscore']:.3f}")
-    print(f"Signal    : {latest['signal']}")
-    print(f"Reason    : {latest['reason']}")
-    print("──────────────────────────────\n")
+def _transition_events(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["previous_signal"] = out["signal"].shift(1).fillna("HOLD")
+    return out[out["signal"] != out["previous_signal"]].copy()
 
 
-# =====================================================
-# Helper: Prepare Real-time Output Dict
-# =====================================================
-def prepare_realtime_output(alerts_df):
-    """Return dict containing the latest alert for downstream modules."""
+def insert_alert_record(alert: dict) -> None:
+    """Insert one transition only if the exact event is not already stored."""
+    with get_db_connection() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM alerts_data WHERE symbol_pair=? AND timestamp=? AND signal=? LIMIT 1",
+            (alert["symbol_pair"], alert["timestamp"], alert["signal"]),
+        ).fetchone()
+        if exists:
+            return
+        conn.execute(
+            "INSERT INTO alerts_data(symbol_pair, timestamp, signal, zscore, spread) VALUES (?, ?, ?, ?, ?)",
+            (alert["symbol_pair"], alert["timestamp"], alert["signal"], alert.get("zscore"), alert.get("spread")),
+        )
+        conn.commit()
+
+
+def run_alert_system(input_csv=INPUT_CSV, output_csv=OUTPUT_CSV) -> pd.DataFrame:
+    input_csv = Path(input_csv)
+    output_csv = Path(output_csv)
+    if not input_csv.exists():
+        raise FileNotFoundError(f"Analytics file not found: {input_csv}")
+
+    df = pd.read_csv(input_csv)
+    if "timestamp" not in df.columns or "zscore" not in df.columns:
+        raise ValueError("Analytics CSV must contain timestamp and zscore columns")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    alerts = generate_alerts(df)
+
+    ALERT_DIR.mkdir(parents=True, exist_ok=True)
+    alerts.to_csv(output_csv, index=False)
+
+    pair = f"{os.getenv('ANALYTICS_SYMBOL_X', 'BTCUSDT').upper()}_{os.getenv('ANALYTICS_SYMBOL_Y', 'ETHUSDT').upper()}"
+    for _, row in _transition_events(alerts).iterrows():
+        insert_alert_record({
+            "symbol_pair": pair,
+            "timestamp": row["timestamp"].isoformat(),
+            "signal": row["signal"],
+            "zscore": float(row["zscore"]) if pd.notna(row.get("zscore")) else None,
+            "spread": float(row["spread"]) if pd.notna(row.get("spread")) else None,
+        })
+    return alerts
+
+
+def prepare_realtime_output(alerts_df: pd.DataFrame) -> dict:
+    if alerts_df is None or alerts_df.empty:
+        return {}
     latest = alerts_df.iloc[-1]
     return {
         "timestamp": str(latest["timestamp"]),
-        "symbol1": str(latest.get("symbol1", "BTCUSDT")),
-        "symbol2": str(latest.get("symbol2", "ETHUSDT")),
         "signal": latest["signal"],
         "reason": latest["reason"],
-        "zscore": float(latest.get("zscore", 0)),
-        "spread": float(latest.get("spread", 0)),
-        "hedge_ratio": float(latest.get("beta_kalman", 0))
+        "zscore": float(latest["zscore"]) if pd.notna(latest.get("zscore")) else None,
+        "spread": float(latest["spread"]) if pd.notna(latest.get("spread")) else None,
     }
 
 
-# =====================================================
-# Run Standalone (for testing)
-# =====================================================
 if __name__ == "__main__":
-    df_alerts = run_alert_system()
-    print_latest_signal(df_alerts)
-    latest_output = prepare_realtime_output(df_alerts)
-    print("Realtime Output Dict:")
-    print(json.dumps(latest_output, indent=4))
+    print(prepare_realtime_output(run_alert_system()))

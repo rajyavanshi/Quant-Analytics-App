@@ -1,74 +1,62 @@
-# =====================================================
-# File: api/db_pair_prices.py
-# Purpose: Fetch and prepare recent pair price data for analytics
-# Author: Suraj Prakash (Quant Developer)
-# =====================================================
+"""Shared pair-price retrieval for API and analytics code."""
+
+from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+
 import pandas as pd
-import os
-import logging
 
-# -------------------------------------------------------
-# Database connection helper
-# -------------------------------------------------------
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "database", "quant_data.db")
-
-def get_conn():
-    """Return a new SQLite connection."""
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+from database.database_setup import DB_PATH, init_db
 
 
-# -------------------------------------------------------
-# Fetch recent pair prices and align timestamps
-# -------------------------------------------------------
-def get_recent_pair_prices(symbol_pair: str, limit: int = 500):
-    """
-    Fetch recent tick prices for a symbol pair and return an aligned DataFrame.
-    Structure:
-        timestamp | x_price | y_price
-    """
-    try:
-        conn = get_conn()
-        a, b = symbol_pair.upper().split("_")
+def get_conn() -> sqlite3.Connection:
+    init_db()
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
 
-        q = """
-            SELECT symbol, timestamp, price
+
+def parse_pair(symbol_pair: str) -> tuple[str, str]:
+    parts = [p.strip().upper() for p in str(symbol_pair).split("_")]
+    if len(parts) != 2 or not all(parts):
+        raise ValueError("symbol_pair must have the form BASE_QUOTE, e.g. BTCUSDT_ETHUSDT")
+    if parts[0] == parts[1]:
+        raise ValueError("A pair must contain two different symbols")
+    return parts[0], parts[1]
+
+
+def get_recent_pair_prices(symbol_pair: str, limit: int = 1000, tolerance_seconds: float = 2.0) -> pd.DataFrame:
+    """Fetch both legs and align trades by nearest timestamp."""
+    a, b = parse_pair(symbol_pair)
+    limit = max(10, min(int(limit), 5000))
+
+    with get_conn() as conn:
+        query = """
+            SELECT timestamp, price
             FROM tick_data
             WHERE UPPER(symbol) = ?
             ORDER BY timestamp DESC
-            LIMIT ?;
+            LIMIT ?
         """
-        df_a = pd.read_sql_query(q, conn, params=(a, limit))
-        df_b = pd.read_sql_query(q, conn, params=(b, limit))
-        conn.close()
+        x = pd.read_sql_query(query, conn, params=(a, limit))
+        y = pd.read_sql_query(query, conn, params=(b, limit))
 
-        if df_a.empty or df_b.empty:
-            logging.warning(f"[DB] One or both legs missing: {a}={len(df_a)}, {b}={len(df_b)}")
-            return pd.DataFrame()
-
-        # Convert timestamps to pandas datetime
-        df_a["timestamp"] = pd.to_datetime(df_a["timestamp"])
-        df_b["timestamp"] = pd.to_datetime(df_b["timestamp"])
-
-        # Sort ascending
-        df_a = df_a.sort_values("timestamp")
-        df_b = df_b.sort_values("timestamp")
-
-        # Merge using nearest timestamps within 2 seconds tolerance
-        merged = pd.merge_asof(
-            df_a.rename(columns={"price": "x_price"}),
-            df_b.rename(columns={"price": "y_price"}),
-            on="timestamp",
-            direction="nearest",
-            tolerance=pd.Timedelta("2s")
-        )
-
-        merged = merged.dropna(subset=["x_price", "y_price"]).reset_index(drop=True)
-
-        logging.info(f"[DB] ✅ Aligned {len(merged)} rows for pair {symbol_pair}.")
-        return merged
-
-    except Exception as e:
-        logging.exception(f"[DB] Error fetching pair prices for {symbol_pair}: {e}")
+    if x.empty or y.empty:
         return pd.DataFrame()
+
+    for frame in (x, y):
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+        frame["price"] = pd.to_numeric(frame["price"], errors="coerce")
+
+    x = x.dropna().sort_values("timestamp").rename(columns={"price": "x_price"})
+    y = y.dropna().sort_values("timestamp").rename(columns={"price": "y_price"})
+
+    merged = pd.merge_asof(
+        x,
+        y,
+        on="timestamp",
+        direction="nearest",
+        tolerance=pd.Timedelta(seconds=tolerance_seconds),
+    )
+    return merged.dropna(subset=["x_price", "y_price"]).reset_index(drop=True)

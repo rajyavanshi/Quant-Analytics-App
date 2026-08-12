@@ -1,60 +1,45 @@
-# =====================================================
-# File: api/routes/backtest_routes.py
-# Purpose: Serve stored backtest performance results from backend files
-# Author: Suraj Prakash (Quant Developer)
-# =====================================================
+"""Backtest result API."""
 
-from flask import Blueprint, jsonify, request
-import os
+from __future__ import annotations
+
 import json
+from pathlib import Path
+
 import pandas as pd
+from flask import Blueprint, jsonify, request
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BACKTEST_DIR = PROJECT_ROOT / "backtest"
+RESULTS_CSV = BACKTEST_DIR / "backtest_results.csv"
+METRICS_JSON = BACKTEST_DIR / "backtest_metrics.json"
 
 backtest_bp = Blueprint("backtest_bp", __name__)
 
-# Paths
-PROJECT_ROOT = r"D:\Quant Analytics App"
-BACKTEST_DIR = os.path.join(PROJECT_ROOT, "backtest")
-RESULTS_CSV = os.path.join(BACKTEST_DIR, "backtest_results.csv")
-METRICS_JSON = os.path.join(BACKTEST_DIR, "backtest_metrics.json")
 
-@backtest_bp.route("/api/backtest/results", methods=["GET"])
+@backtest_bp.get("/api/backtest/results")
 def get_backtest_results():
-    """Serve stored backtest results as JSON."""
-    limit = int(request.args.get("limit", 500))
-    symbol_pair = request.args.get("symbol_pair", None)  # for future filtering
-
-    # Check existence
-    if not os.path.exists(RESULTS_CSV):
-        return jsonify({
-            "status": "error",
-            "message": "No backtest results found. Run the backtest engine first.",
-            "data": []
-        }), 200
-
     try:
-        df = pd.read_csv(RESULTS_CSV)
-        df = df.tail(limit).reset_index(drop=True)
+        limit = request.args.get("limit", default=500, type=int)
+        if limit is None or not 1 <= limit <= 5000:
+            return jsonify({"status": "error", "message": "limit must be between 1 and 5000", "data": []}), 400
+        if not RESULTS_CSV.exists():
+            return jsonify({"status": "warning", "message": "No backtest results found", "data": [], "metrics": {}}), 200
 
-        # Add symbol pair field for consistency (optional, if you plan multi-pair)
-        if "symbol_pair" not in df.columns and symbol_pair:
-            df["symbol_pair"] = symbol_pair
+        df = pd.read_csv(RESULTS_CSV).tail(limit).reset_index(drop=True)
+        symbol_pair = request.args.get("symbol_pair")
+        if symbol_pair and "symbol_pair" in df.columns:
+            df = df[df["symbol_pair"].astype(str).str.upper() == symbol_pair.upper()]
 
-        # Load metrics
         metrics = {}
-        if os.path.exists(METRICS_JSON):
-            with open(METRICS_JSON, "r") as f:
-                metrics = json.load(f)
+        if METRICS_JSON.exists():
+            metrics = json.loads(METRICS_JSON.read_text(encoding="utf-8"))
 
         return jsonify({
             "status": "success",
             "message": "Backtest results fetched successfully",
+            "count": len(df),
             "data": df.to_dict(orient="records"),
-            "metrics": metrics
-        }), 200
-
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": f"Failed to read backtest results: {str(e)}",
-            "data": []
-        }), 500
+            "metrics": metrics,
+        })
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc), "data": []}), 500
