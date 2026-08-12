@@ -100,13 +100,15 @@ def test_trade_pnl_includes_entry_and_exit_costs_and_reconciles_to_total_pnl():
     df = pd.DataFrame(
         {
             "timestamp": pd.date_range("2026-01-01", periods=5, freq="min", tz="UTC"),
-            "spread": [0.0, 1.0, 3.0, 2.0, 2.0],
+            "spread": [0.0, 0.0, 1.0, 3.0, 3.0],
             "signal": ["HOLD", "LONG", "LONG", "HOLD", "HOLD"],
         }
     )
     result = simulate_backtest(df, notional_per_unit=1.0, fee_per_trade=1.0, slippage_pct=0.0)
     metrics = compute_metrics(result)
 
+    # Entry occurs at row 1, market P&L arrives on rows 2-4, and the final
+    # HOLD row closes the position. There is +2 market P&L and two unit costs.
     assert metrics["total_pnl"] == pytest.approx(0.0)
     assert metrics["n_trades"] == 1
     assert metrics["trades_sample"][0]["trade_pnl"] == pytest.approx(0.0)
@@ -115,9 +117,9 @@ def test_trade_pnl_includes_entry_and_exit_costs_and_reconciles_to_total_pnl():
 def test_reversal_cost_is_split_between_old_exit_and_new_entry():
     df = pd.DataFrame(
         {
-            "timestamp": pd.date_range("2026-01-01", periods=6, freq="min", tz="UTC"),
-            "spread": [0.0, 1.0, 3.0, 2.0, 4.0, 4.0],
-            "signal": ["HOLD", "LONG", "LONG", "SHORT", "SHORT", "HOLD"],
+            "timestamp": pd.date_range("2026-01-01", periods=7, freq="min", tz="UTC"),
+            "spread": [0.0, 0.0, 2.0, 2.0, 4.0, 2.0, 2.0],
+            "signal": ["HOLD", "LONG", "LONG", "SHORT", "SHORT", "SHORT", "HOLD"],
         }
     )
     result = simulate_backtest(df, notional_per_unit=1.0, fee_per_trade=1.0, slippage_pct=0.0)
@@ -127,6 +129,7 @@ def test_reversal_cost_is_split_between_old_exit_and_new_entry():
     assert metrics["n_trades"] == 2
     assert sum(t["trade_pnl"] for t in trades) == pytest.approx(metrics["total_pnl"])
     assert [t["position"] for t in trades] == pytest.approx([1.0, -1.0])
-    # Long: entry -1, market +2, reversal interval -1, reversal exit -1 => -1.
-    # Short: reversal entry -1, market -2, final exit -1 => -4.
-    assert [t["trade_pnl"] for t in trades] == pytest.approx([-1.0, -4.0])
+
+    # Long: entry -1, market +2, reversal cashflow -2, so -1.
+    # Short: market -2, final exit -1, so -3. Total = -4.
+    assert [t["trade_pnl"] for t in trades] == pytest.approx([-1.0, -3.0])
